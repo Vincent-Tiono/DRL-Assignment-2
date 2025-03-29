@@ -2,6 +2,8 @@ import copy
 import random
 import math
 import numpy as np
+from value_approx import NTupleApproximator  # Import only what you need
+
 
 # UCT Node for MCTS
 class UCTNode:
@@ -27,11 +29,12 @@ class UCTNode:
 
 
 class UCTMCTS:
-    def __init__(self, env, iterations=500, exploration_constant=1.41, rollout_depth=10):
+    def __init__(self, env, approximator, iterations=500, exploration_constant=1.41, rollout_depth=10):
         self.env = env
         self.iterations = iterations
         self.c = exploration_constant  # Balances exploration and exploitation
         self.rollout_depth = rollout_depth
+        self.approximator = approximator
 
     def create_env_from_state(self, state, score):
         """
@@ -43,30 +46,55 @@ class UCTMCTS:
         return new_env
 
     def select_child(self, node):
-        # TODO: Use the UCT formula: Q + c * sqrt(log(parent_visits)/child_visits) to select the child
+        """
+        Select a child node using UCT formula enhanced with approximator values
+        """
         selected_child = None
         best_score = -float('inf')
-        for child in node.children.values():
-          if child.visits == 0:
-            return child
-          else:
-            uct_value = child.total_reward + self.c * math.sqrt(math.log(node.visits) / child.visits)
-          if selected_child is None or uct_value > best_score:
-            best_score = uct_value
-            selected_child = child
+        
+        for action, child in node.children.items():
+            if child.visits == 0:
+                return child
+            
+            # Standard UCT formula
+            uct_value = child.total_reward / child.visits + self.c * math.sqrt(math.log(node.visits) / child.visits)
+            
+            approx_value = self.approximator.value(child.state) / self.approximator.average_value()
+            uct_value += 0.1 * approx_value  # Small weight to avoid dominating UCT
+        
+            if selected_child is None or uct_value > best_score:
+                best_score = uct_value
+                selected_child = child
+                
         return selected_child
 
 
     def rollout(self, sim_env, depth):
         # TODO: Perform a random rollout from the current state up to the specified depth.
-        while depth > 0:
-          legal_moves = [a for a in range(4) if sim_env.is_move_legal(a)]
-          if len(legal_moves) == 0:
-            break # leaf; game over
-          action = random.choice(legal_moves)
-          sim_env.step(action)
-          depth -= 1
-        return sim_env.score
+        initial_score = sim_env.score
+        cumulative_reward = 0
+        discount_factor = 0.99  # You can adjust this value
+
+        # Play some random moves first (for exploration)
+        for i in range(min(depth, self.rollout_depth)):
+            legal_moves = [a for a in range(4) if sim_env.is_move_legal(a)]
+            if not legal_moves:
+                break  # Game over
+            action = random.choice(legal_moves)
+            _, new_score, done, info = sim_env.step(action)
+            
+            # Calculate discounted reward
+            reward = new_score - initial_score
+            cumulative_reward += (discount_factor ** i) * reward
+            
+            if done:
+                break
+
+        state_value = self.approximator.value(sim_env.board)
+        v_norm = self.approximator.average_value()
+        
+        # Combine cumulative reward with estimated future value
+        return (cumulative_reward + state_value) / v_norm
 
 
     def backpropagate(self, node, reward):
